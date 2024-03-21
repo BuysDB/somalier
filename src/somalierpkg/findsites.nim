@@ -81,6 +81,10 @@ proc findsites_main*() =
     option("--AN-field", help="info field in the vcf that contains the allele number", default="AN")
     option("--AF-field", help="info field in the vcf that contains the allele frequency", default="AF")
     option("--output-vcf", help="path to output vcf containing sites", default="sites.vcf.gz")
+
+    option("--par-region-start", help="Pseudoautosomal region start coordinate to ignore in the X chromsome", default=2781479)
+    option("--par-region-end", help="Pseudoautosomal region end coordinate to ignore in the X chromsome", default=154931044)
+
     arg("vcf", help="population VCF to use to find sites", nargs=1)
 
   var argv = commandLineParams()
@@ -101,6 +105,8 @@ proc findsites_main*() =
     min_AF = parseFloat(opts.min_AF)
     field_AN = opts.AN_field
     field_AF = opts.AF_field
+    par_region_start = parseInt(opts.par_region_start)
+    par_region_end = parseInt(opts.par_region_end)
     gno:Gnotater
 
   var exclude_regions = newTable[string, seq[region]]()
@@ -158,7 +164,7 @@ proc findsites_main*() =
 
 
     # stuff outside of PAR on human only.
-    if $last_chrom in ["X", "chrX"] and (v.start < 2781479 or v.start > 154931044) : continue
+    if $last_chrom in ["X", "chrX"] and (v.start < par_region_start or v.start > par_region_end) : continue
 
     if v.info.get(field_AF, afs) != Status.OK:
       if error_count < 10:
@@ -176,6 +182,7 @@ proc findsites_main*() =
       continue
 
     if v.FILTER != "PASS":
+      stderr.write_line "[somalier] [removal] FILTER != PASS"
       continue
 
     if afs[0] > 0.01:
@@ -186,10 +193,12 @@ proc findsites_main*() =
 
     # check exclude after putting into interval trees
     if gno != nil and gno.contains(v) and $v.CHROM notin ["chrX", "X"]:
+      stderr.write_line "[somalier] [removal] Excluded region"
       continue
 
     var info = v.info
     if info.get(field_AN, ans) == Status.OK and (($v.CHROM notin ["chrX", "X", "chrY", "Y"]) and ans[0] < min_AN) :
+      stderr.write_line "[somalier] [removal] AN filter"
       continue
     if $v.CHROM in ["chrY", "Y", "chrX", "X"]:
       if afs[0] < 0.04 or afs[0] > 0.96: continue
@@ -197,15 +206,20 @@ proc findsites_main*() =
       if afs[0] < min_AF or afs[0] > (1 - min_AF): continue
 
     if info.get("AS_FilterStatus", oms) == Status.OK and oms != "PASS":
+      stderr.write_line "[somalier] [removal] AS filter"
       continue
     if info.get("OLD_MULTIALLELIC", oms) == Status.OK:
+      stderr.write_line "[somalier] [removal] OLD_MULTIALLELIC filter"
       continue
     if info.get("OLD_VARIANT", oms) == Status.OK:
+      stderr.write_line "[somalier] [removal] OLD_VARIANT filter"
       continue
 
     if $v.CHROM notin ["chrY", "Y"] and info.has_flag("segdup"):
+      stderr.write_line "[somalier] [removal] segdup filter"
       continue
     if info.has_flag("lcr"):
+      stderr.write_line "[somalier] [removal] lcr filter"
       continue
 
     # BaseQRankSum=0.571;ClippingRankSum=0;MQRankSum=0.101;ReadPosRankSum
@@ -215,19 +229,26 @@ proc findsites_main*() =
         if info.get(rs & "RankSum", ranksum) == Status.OK and abs(ranksum[0]) > 2.4:
           skip = true
           break
-      if skip: continue
+      if skip: 
+        stderr.write_line "[somalier] [removal] BaseQ MQ Clipping ReadPos filter"
+        continue
 
       if info.get("FS", ranksum) == Status.OK and abs(ranksum[0]) > 2.4:
+        stderr.write_line "[somalier] [removal] FS filter"
         continue
       if info.get("QD", ranksum) == Status.OK and abs(ranksum[0]) < 12:
+        stderr.write_line "[somalier] [removal] QD filter"
         continue
       if info.get("MQ", ranksum) == Status.OK and ranksum[0] < 50:
+        stderr.write_line "[somalier] [removal] ranksum filter"
         continue
 
     if lap.find(max(0, v.start.int - 5), v.stop.int + 5, empty_regions):
+      stderr.write_line "[somalier] [removal] empty_regions filter"
       continue
 
     if include_regions.len > 0 and not lap_incl.find(v.start.int, v.stop.int, empty_regions):
+      stderr.write_line "[somalier] [removal] include regions filter"
       continue
 
     #discard wtr.write_variant(v)
